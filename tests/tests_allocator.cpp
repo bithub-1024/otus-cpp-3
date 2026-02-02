@@ -54,6 +54,26 @@ BOOST_AUTO_TEST_CASE(AllocatorLimits) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(TestDeallocateReuse) {
+    std::cout << "Тест: Переиспользование памяти после deallocate" << std::endl;
+    
+    allocator<int, 5> alloc;
+    
+    // Выделяем 3 элемента
+    int* p1 = alloc.allocate(3);
+    BOOST_CHECK(p1 != nullptr);
+    BOOST_CHECK_EQUAL(alloc.get_used(), 3);
+    
+    // Освобождаем 2 элемента
+    alloc.deallocate(p1 + 1, 2);  // Освобождаем последние 2 элемента
+    BOOST_CHECK_EQUAL(alloc.get_used(), 1);  // Должно уменьшиться
+    
+    // Теперь можем выделить снова
+    int* p2 = alloc.allocate(2);
+    BOOST_CHECK(p2 != nullptr);
+    BOOST_CHECK_EQUAL(alloc.get_used(), 3);  // Снова 3
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ============================================
@@ -135,8 +155,50 @@ BOOST_AUTO_TEST_CASE(MyContainerWithCustomAllocator) {
     BOOST_CHECK_EQUAL(container.size(), 3);
 }
 
-BOOST_AUTO_TEST_SUITE_END()
+BOOST_AUTO_TEST_CASE(TestMyContainerInsert) {
+    std::cout << "Тест: MyContainer с методом insert()" << std::endl;
+    
+    MyContainer<int> container;
+    
+    // Вставка в пустой контейнер
+    container.insert(container.begin(), 100);
+    BOOST_CHECK_EQUAL(container.size(), 1);
+    
+    // Вставка в начало
+    container.insert(container.begin(), 50);
+    BOOST_CHECK_EQUAL(container.size(), 2);
+    
+    // Вставка в конец
+    container.insert(container.end(), 200);
+    BOOST_CHECK_EQUAL(container.size(), 3);
+    
+    // Проверка порядка элементов (должно быть: 50, 100, 200)
+    auto it = container.begin();
+    BOOST_CHECK_EQUAL(*it, 50);
+    ++it;
+    BOOST_CHECK_EQUAL(*it, 100);
+    ++it;
+    BOOST_CHECK_EQUAL(*it, 200);
+    
+    // Вставка в середину
+    it = container.begin();
+    ++it;  // Теперь указывает на 100
+    container.insert(it, 75);  // Вставляем перед 100
+    
+    BOOST_CHECK_EQUAL(container.size(), 4);
+    
+    // Проверка нового порядка: 50, 75, 100, 200
+    it = container.begin();
+    BOOST_CHECK_EQUAL(*it, 50);
+    ++it;
+    BOOST_CHECK_EQUAL(*it, 75);
+    ++it;
+    BOOST_CHECK_EQUAL(*it, 100);
+    ++it;
+    BOOST_CHECK_EQUAL(*it, 200);
+}
 
+BOOST_AUTO_TEST_SUITE_END()
 // ============================================
 // ДЕМОНСТРАЦИОННЫЙ ТЕСТ (ОСНОВНОЕ ЗАДАНИЕ)
 // ============================================

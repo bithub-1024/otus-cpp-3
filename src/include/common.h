@@ -19,6 +19,7 @@ private:
     bool block_allocated;
     size_t used;
     size_t capacity;
+    bool* free_slots;
     size_t block_id;
     static size_t total_blocks;
     
@@ -74,24 +75,38 @@ size_t allocator<T, init_size>::total_blocks = 0;
 template <typename T, size_t init_size>
 allocator<T, init_size>::allocator(): 
     data(nullptr), next_block(nullptr), block_allocated(false), 
-    used(0), capacity(init_size), block_id(++total_blocks) 
+    used(0), capacity(init_size), block_id(++total_blocks), free_slots(nullptr)
 {
     data = static_cast<T *>(malloc(sizeof(T) * init_size));
     if (!data) throw std::bad_alloc();
     else block_allocated = true;
-    /*std::cout << "Выделена память для блока #" << block_id 
-              << ": " << (capacity * sizeof(T)) << " байт\n";*/
+
+    // Выделяем массив флагов
+    free_slots = static_cast<bool*>(malloc(sizeof(bool) * init_size));
+    if (free_slots) {
+        for (size_t i = 0; i < init_size; ++i) {
+            free_slots[i] = true;  // Все ячейки свободны
+        }
+    }
 }
 
 template <typename T, size_t init_size>
 template <typename U>
 allocator<T, init_size>::allocator(const allocator<U, init_size>&) : 
     data(nullptr), next_block(nullptr), block_allocated(false), 
-    used(0), capacity(init_size), block_id(++total_blocks) 
+    used(0), capacity(init_size), block_id(++total_blocks), free_slots(nullptr) 
 {
     data = static_cast<T *>(malloc(sizeof(T) * init_size));
     if (!data) throw std::bad_alloc();
     else block_allocated = true;
+
+    // Выделяем массив флагов
+    free_slots = static_cast<bool*>(malloc(sizeof(bool) * init_size));
+    if (free_slots) {
+        for (size_t i = 0; i < init_size; ++i) {
+            free_slots[i] = true;  // Все ячейки свободны
+        }
+    }
 }
 
 template <typename T, size_t init_size>
@@ -101,7 +116,10 @@ allocator<T, init_size>::~allocator()
         free(data); 
         data = nullptr;
     }
-    //if (next_block) delete next_block;
+    if (free_slots) {
+        free(free_slots);
+        free_slots = nullptr;
+    }
 }
 
 template <typename T, size_t init_size>
@@ -112,25 +130,60 @@ T* allocator<T, init_size>::allocate(size_t n) {
         std::cerr << "ОШИБКА: Запрос " << n << " превышает размер блока " << init_size << "\n";
         throw std::bad_alloc();
     }
-    if (capacity < (used + n))
-    {
-        if (!next_block)
-        {
-            next_block = new allocator<T, init_size>();
+    // Поиск n последовательных свободных ячеек
+    size_t free_count = 0;
+    for (size_t i = 0; i < capacity; ++i) {
+        if (free_slots[i]) {
+            free_count++;
+            if (free_count == n) {
+                size_t start_index = i - n + 1;
+                for (size_t j = 0; j < n; ++j) {
+                    free_slots[start_index + j] = false;
+                }
+                used += n;
+                return data + start_index;
+            }
+        } else {
+            free_count = 0;
         }
-        return next_block->allocate(n);
     }
-    else { 
-        T* ptr;
-        ptr = data + used;
-        used += n;
-        return ptr;
+    
+    // Не нашли места в текущем блоке
+    if (!next_block) {
+        next_block = new allocator<T, init_size>();
     }
+    return next_block->allocate(n);
 }
 
 template <typename T, size_t init_size>
-void allocator<T, init_size>::deallocate(T* p, size_t n) noexcept {
-    // STL требует этот метод
+void allocator<T, init_size>::deallocate(T* p, size_t n) noexcept 
+{
+    if (!p || n == 0) return;
+    if (p >= data && p < data + capacity && free_slots) 
+    {   
+        size_t index = p - data;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (index + i < capacity)
+            {
+                if (!free_slots[index + i])
+                {
+                    // Ячейка была занята, теперь свободна
+                    free_slots[index + i] = true;
+                }
+                else
+                {
+                    std::cerr << "ОШИБКА: Повторное освобождение по адресу " << p << ", слот " << (index + i) << ", в блоке " << block_id << "\n";
+                    /*throw std::bad_alloc();*/
+                }
+            }
+        }
+        used -= n;
+    }
+    else if (next_block)
+    {
+        next_block->deallocate(p, n);
+    }
 }
 
 template <typename T, size_t init_size>
@@ -195,6 +248,37 @@ private:
     Node* tail;
     size_t count;
     typename Alloc::template rebind<Node>::other alloc;
+
+public:
+    // ИТЕРАТОР
+    class iterator {
+        
+    private:
+        Node* current;
+        
+    public:
+        iterator(Node* node = nullptr) : current(node) {}
+        
+        T& operator*() { return current->value; }
+        T* operator->() { return &current->value; }
+        
+        iterator& operator++() {  // ++it
+            current = current->next;
+            return *this;
+        }
+        
+        iterator operator++(int) {  // it++
+            iterator old = *this;
+            current = current->next;
+            return old;
+        }
+        
+        bool operator==(const iterator& other) const { return current == other.current; }
+        bool operator!=(const iterator& other) const { return current != other.current; }
+        
+        // Для доступа к узлу внутри insert
+        Node* get_node() { return current; }
+    };
     
 public:
     MyContainer();
@@ -205,6 +289,17 @@ public:
     void print() const;
     size_t size() const;
     bool empty() const;
+
+    // Методы для итераторов
+    iterator begin() { return iterator(head); }
+    iterator end() { return iterator(nullptr); }
+    
+    // insert
+    iterator insert(iterator pos, const T& value);
+
+private:
+    // метод для поиска предыдущего узла
+    Node* find_previous(Node* target);
 };
 
 // Реализация MyContainer
@@ -221,16 +316,60 @@ MyContainer<T, Alloc>::~MyContainer() {
 
 template <typename T, typename Alloc>
 void MyContainer<T, Alloc>::add(const T& value) {
+    insert(end(), value);  // Просто вставка в конец
+}
+
+// Метод insert
+template <typename T, typename Alloc>
+typename MyContainer<T, Alloc>::iterator 
+MyContainer<T, Alloc>::insert(iterator pos, const T& value) {
+    // Создаем новый узел
     Node* new_node = alloc.allocate(1);
     alloc.construct(new_node, value);
     
-    if (!head) {
-        head = tail = new_node;
-    } else {
+    Node* pos_node = pos.get_node();
+    
+    // Если вставляем в начало или список пустой
+    if (pos_node == head || !head) {
+        new_node->next = head;
+        head = new_node;
+        if (!tail) tail = new_node;
+    }
+    // Если вставляем в конец (pos == end())
+    else if (!pos_node) {
         tail->next = new_node;
         tail = new_node;
     }
+    // Вставляем в середину
+    else {
+        Node* prev = find_previous(pos_node);
+        if (prev) {
+            new_node->next = prev->next;
+            prev->next = new_node;
+        } else {
+            // На всякий случай
+            new_node->next = head;
+            head = new_node;
+        }
+    }
+    
     count++;
+    return iterator(new_node);
+}
+
+// метод find_previous 
+template <typename T, typename Alloc>
+typename MyContainer<T, Alloc>::Node* 
+MyContainer<T, Alloc>::find_previous(Node* target) {
+    if (!head || !target || head == target) {
+        return nullptr;
+    }
+    
+    Node* current = head;
+    while (current && current->next != target) {
+        current = current->next;
+    }
+    return current;
 }
 
 template <typename T, typename Alloc>
